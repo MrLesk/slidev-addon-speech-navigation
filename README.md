@@ -128,7 +128,7 @@ it. Analyses and transcripts are not written to disk.
 ## Development
 
 ```bash
-git clone https://github.com/globodex/slidev-addon-speech-navigation.git
+git clone https://github.com/MrLesk/slidev-addon-speech-navigation.git
 cd slidev-addon-speech-navigation
 npm install
 npm run prepare:example
