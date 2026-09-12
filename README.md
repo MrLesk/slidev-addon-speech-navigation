@@ -9,7 +9,7 @@ layouts, diagrams, images, components, and other addons.
 
 ## Install
 
-You need Slidev 52 or newer, Node.js 20.19 or newer, and an OpenAI API key.
+You need Slidev 52 or newer, Node.js 22.12 or newer, and an OpenAI API key.
 
 1. Install the addon and Slidev's Chromium renderer:
 
