@@ -1,0 +1,69 @@
+{
+  "name": "slidev-addon-speech-navigation",
+  "version": "0.1.0",
+  "description": "Navigate Slidev presentations from live speech using slide visuals and speaker notes.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Alex",
+  "keywords": [
+    "slidev",
+    "slidev-addon",
+    "openai",
+    "speech",
+    "presentation",
+    "accessibility"
+  ],
+  "homepage": "https://github.com/globodex/slidev-addon-speech-navigation#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/globodex/slidev-addon-speech-navigation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/globodex/slidev-addon-speech-navigation/issues"
+  },
+  "files": [
+    "bin",
+    "setup",
+    "src",
+    "global-top.vue",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md"
+  ],
+  "bin": {
+    "slidev-speech-navigation": "./bin/slidev-speech-navigation.mjs"
+  },
+  "scripts": {
+    "dev": "cd example && slidev slides.md --open",
+    "prepare:example": "node ./bin/slidev-speech-navigation.mjs prepare example/slides.md",
+    "build:example": "cd example && slidev build slides.md --out dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.typecheck.json",
+    "check": "npm run typecheck && npm test && npm run build:example && npm run prepare:example && npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@slidev/cli": ">=52.0.0",
+    "vue": ">=3.5.0"
+  },
+  "devDependencies": {
+    "@slidev/cli": "^52.19.1",
+    "@slidev/theme-default": "^0.25.0",
+    "@slidev/types": "^52.19.1",
+    "@types/node": "^24.3.1",
+    "playwright-chromium": "^1.55.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vitest": "^5.0.0",
+    "vue": "^3.5.21",
+    "vue-tsc": "^3.0.6"
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "slidev": ">=52.0.0"
+  },
+  "packageManager": "npm@11.6.0"
+}

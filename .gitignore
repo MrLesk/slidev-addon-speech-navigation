@@ -1,0 +1,11 @@
+node_modules/
+dist/
+example/dist/
+.slidev-speech-navigation/
+example/.slidev-speech-navigation/
+.env
+.env.*
+!.env.example
+*.log
+*.tgz
+.DS_Store
