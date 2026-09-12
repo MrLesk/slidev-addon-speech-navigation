@@ -19,7 +19,6 @@ export type RuntimeAssetStatus = AssetStatus | {
 export function resolveRuntimeAssetStatus(
   preparation: PreparationStatus,
   assets: AssetStatus,
-  assetGeneration = 'missing',
 ): RuntimeAssetStatus {
   if (preparation.state === 'checking' || preparation.state === 'preparing') {
     return {
@@ -28,11 +27,6 @@ export function resolveRuntimeAssetStatus(
     }
   }
   if (preparation.state === 'error') {
-    const generatedAt = Date.parse(assetGeneration)
-    if (assets.state === 'ready'
-      && preparation.failedAt
-      && generatedAt > preparation.failedAt)
-      return assets
     return {
       state: 'error',
       message: preparation.message,
@@ -50,6 +44,7 @@ interface ImagePreparationOptions {
   inspect?: () => Promise<AssetStatus>
   runPrepare?: () => Promise<void>
   debounceMs?: number
+  retryDelays?: number[]
 }
 
 const VISUAL_EXTENSIONS = new Set([
@@ -63,6 +58,8 @@ const IGNORED_DIRECTORIES = new Set([
   '.git', '.output', '.slidev-speech-navigation', '.vite', 'dist', 'node_modules',
 ])
 
+const FAILURE_RETRY_COOLDOWN_MS = 15_000
+
 export function isDeckVisualFile(userRoot: string, file: string) {
   const path = relative(userRoot, file)
   if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path))
@@ -74,7 +71,7 @@ export function isDeckVisualFile(userRoot: string, file: string) {
 
 function runPrepareCommand(options: ImagePreparationOptions, setChild: (child: ChildProcess | null) => void) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [options.prepareCommand, 'prepare', options.entry], {
+    const child = spawn(process.execPath, [options.prepareCommand, options.entry], {
       cwd: options.userRoot,
       env: {
         ...process.env,
@@ -111,10 +108,27 @@ export function createImagePreparation(options: ImagePreparationOptions) {
   let stopped = false
   let serverStarted = false
   let debounce: ReturnType<typeof setTimeout> | null = null
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  let finishRetry: (() => void) | null = null
   let child: ChildProcess | null = null
+  const retryDelays = options.retryDelays ?? [750, 2_500]
 
   const runPrepare = options.runPrepare
     ?? (() => runPrepareCommand(options, value => child = value))
+
+  function waitBeforeRetry(milliseconds: number) {
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        if (retryTimer)
+          clearTimeout(retryTimer)
+        retryTimer = null
+        finishRetry = null
+        resolve()
+      }
+      finishRetry = finish
+      retryTimer = setTimeout(finish, milliseconds)
+    })
+  }
 
   async function prepareOnce(force: boolean) {
     if (!force) {
@@ -150,26 +164,42 @@ export function createImagePreparation(options: ImagePreparationOptions) {
 
     running = (async () => {
       let forceNextRun = force
-      do {
+      let retriesUsed = 0
+      while (!stopped) {
         rerun = false
         try {
           await prepareOnce(forceNextRun)
+          if (!rerun)
+            break
+          forceNextRun = true
+          retriesUsed = 0
         }
         catch (error) {
           if (rerun && !stopped) {
             forceNextRun = true
+            retriesUsed = 0
+            continue
+          }
+          const retryDelay = retryDelays[retriesUsed]
+          if (retryDelay !== undefined && !stopped) {
+            retriesUsed += 1
+            forceNextRun = true
+            status = {
+              state: 'preparing',
+              message: 'Slide image preparation was interrupted. Retrying automatically…',
+            }
+            await waitBeforeRetry(retryDelay)
             continue
           }
           const detail = error instanceof Error ? error.message : 'Unknown error'
           status = {
             state: 'error',
-            message: `Could not prepare slide images automatically. ${detail}`,
+            message: `Slide images could not be prepared. Retrying automatically. ${detail}`,
             failedAt: Date.now(),
           }
           break
         }
-        forceNextRun = rerun
-      } while (rerun && !stopped)
+      }
     })()
       .finally(() => running = null)
     return running
@@ -195,6 +225,17 @@ export function createImagePreparation(options: ImagePreparationOptions) {
     }, options.debounceMs ?? 1_000)
   }
 
+  function retryIfDue(now = Date.now()) {
+    const failedAt = status.failedAt
+    if (running
+      || status.state !== 'error'
+      || !failedAt
+      || now - failedAt < FAILURE_RETRY_COOLDOWN_MS)
+      return false
+    void prepare(true)
+    return true
+  }
+
   function attach(server: ViteDevServer) {
     const onListening = () => {
       serverStarted = true
@@ -206,6 +247,7 @@ export function createImagePreparation(options: ImagePreparationOptions) {
       stopped = true
       if (debounce)
         clearTimeout(debounce)
+      finishRetry?.()
       const runningChild = child
       runningChild?.kill('SIGTERM')
       if (runningChild) {
@@ -235,5 +277,6 @@ export function createImagePreparation(options: ImagePreparationOptions) {
     attach,
     getStatus: () => status,
     prepare,
+    retryIfDue,
   }
 }

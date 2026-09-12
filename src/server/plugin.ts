@@ -99,10 +99,20 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
 
   async function getRuntimeAssetStatus(assets: Awaited<ReturnType<typeof inspectAssets>>) {
     const preparationStatus = preparation.getStatus()
-    const generation = preparationStatus.state === 'error'
-      ? await getAssetGeneration(options.userRoot)
-      : 'missing'
-    return resolveRuntimeAssetStatus(preparationStatus, assets, generation)
+    if (preparationStatus.state === 'error' && preparation.retryIfDue()) {
+      return {
+        state: 'preparing' as const,
+        message: 'Retrying slide image preparation…',
+      }
+    }
+    if (preparationStatus.state === 'ready' && assets.state !== 'ready') {
+      void preparation.prepare(true)
+      return {
+        state: 'preparing' as const,
+        message: 'Restoring the prepared slide images…',
+      }
+    }
+    return resolveRuntimeAssetStatus(preparationStatus, assets)
   }
 
   async function learnWindow(window: SlideWindow) {

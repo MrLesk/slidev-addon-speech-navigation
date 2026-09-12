@@ -5,16 +5,6 @@ import { createRequire } from 'node:module'
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 
-function printHelp() {
-  console.log(`Slidev Speech Navigation
-
-Usage:
-  slidev-speech-navigation prepare [slides.md]
-
-The prepare command renders the deck as PNG images with Slidev. Run it again
-only if automatic preparation during normal Slidev startup needs help.`)
-}
-
 function resolveSlidev(cwd) {
   const resolvers = [
     createRequire(resolve(cwd, 'package.json')),
@@ -110,7 +100,7 @@ async function prepare(entryArgument) {
 
   const sourceAfterExport = await stat(entry)
   if (sourceAfterExport.mtimeMs > sourceBeforeExport.mtimeMs + 1)
-    throw new Error('The slide deck changed during export. Prepare it again to capture the latest version.')
+    throw new Error('The slide deck changed during image capture.')
   await writeFile(resolve(generatedRoot, 'manifest.json'), `${JSON.stringify({
     entry,
     sourceMtimeMs: sourceAfterExport.mtimeMs,
@@ -123,24 +113,12 @@ async function prepare(entryArgument) {
     : `Prepared ${images.length} slide images in ${imageRoot}`)
 }
 
-const [command, entry] = process.argv.slice(2)
-
-if (!command || command === '--help' || command === '-h') {
-  printHelp()
-  process.exit(0)
-}
-
-if (command !== 'prepare') {
-  console.error(`Unknown command: ${command}`)
-  printHelp()
-  process.exit(1)
-}
+const [entry] = process.argv.slice(2)
 
 try {
   await prepare(entry)
 }
 catch (error) {
   console.error(error instanceof Error ? error.message : error)
-  console.error('\nIf Chromium is missing, install it with: npm install -D playwright-chromium')
   process.exit(1)
 }

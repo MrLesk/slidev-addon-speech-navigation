@@ -72,7 +72,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
     if (!await findImagePath(userRoot, slideNumber)) {
       return {
         state: 'missing',
-        message: `Prepared image for slide ${slideNumber} is missing. Restart Slidev to rebuild the images.`,
+        message: `Prepared image for slide ${slideNumber} is missing. Rebuilding the images automatically.`,
       }
     }
   }
@@ -84,7 +84,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
   catch {
     return {
       state: 'stale',
-      message: 'The prepared images belong to a missing slide deck. Restart Slidev to rebuild them.',
+      message: 'The active slide deck could not be found.',
     }
   }
 
@@ -118,7 +118,7 @@ export async function loadPreparedSlides(
     const source = slides[number - 1]
     const imagePath = await findImagePath(userRoot, number)
     if (!source || !imagePath)
-      throw new Error(`Prepared image for slide ${number} is missing. Run: npx slidev-speech-navigation prepare`)
+      throw new Error(`Prepared image for slide ${number} is missing`)
 
     const image = await readFile(imagePath)
     prepared.push({

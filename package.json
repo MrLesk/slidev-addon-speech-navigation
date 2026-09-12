@@ -33,20 +33,18 @@
     "CODE_OF_CONDUCT.md",
     "SECURITY.md"
   ],
-  "bin": {
-    "slidev-speech-navigation": "./bin/slidev-speech-navigation.mjs"
-  },
   "scripts": {
     "dev": "cd example && slidev slides.md --open",
-    "prepare:example": "node ./bin/slidev-speech-navigation.mjs prepare example/slides.md",
+    "verify:export": "node ./bin/slidev-speech-navigation.mjs example/slides.md",
     "build:example": "cd example && slidev build slides.md --out dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "vue-tsc --noEmit -p tsconfig.typecheck.json",
-    "check": "npm run typecheck && npm test && npm run build:example && npm run prepare:example && npm pack --dry-run"
+    "check": "npm run typecheck && npm test && npm run build:example && npm run verify:export && npm pack --dry-run"
   },
   "peerDependencies": {
     "@slidev/cli": ">=52.0.0",
+    "playwright-chromium": ">=1.55.0 <2",
     "vue": ">=3.5.0"
   },
   "devDependencies": {

@@ -11,7 +11,7 @@ layouts, diagrams, images, components, and other addons.
 
 You need Slidev 52 or newer, Node.js 20.19 or newer, and an OpenAI API key.
 
-1. Install the addon and Slidev's export browser:
+1. Install the addon and Slidev's Chromium renderer:
 
    ```bash
    npm install -D slidev-addon-speech-navigation playwright-chromium
@@ -46,10 +46,6 @@ Open the **Presenter** link printed by Slidev (normally `/presenter/`) and click
 **Speech nav**. The first start can
 take a short time while the addon learns the first group of slides. Allow
 microphone access when the browser asks.
-
-If automatic preparation fails, run
-`npx slidev-speech-navigation prepare [slides.md]` to see the exporter error
-directly. This is a recovery command, not part of the normal workflow.
 
 ## Speaker notes
 

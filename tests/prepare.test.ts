@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { resolve } from 'node:path'
 import type { ViteDevServer } from 'vite'
 import { describe, expect, it, vi } from 'vitest'
-import { createImagePreparation, isDeckVisualFile, resolveRuntimeAssetStatus } from '../src/server/prepare'
+import { createImagePreparation, isDeckVisualFile } from '../src/server/prepare'
 
 const root = resolve('/tmp', 'example-slidev-deck')
 
@@ -13,6 +13,7 @@ function createOptions(overrides: Record<string, unknown> = {}) {
     slideCount: () => 3,
     prepareCommand: resolve(root, 'prepare.mjs'),
     onPrepared: vi.fn(),
+    retryDelays: [],
     ...overrides,
   }
 }
@@ -134,9 +135,46 @@ describe('automatic slide image preparation', () => {
 
     expect(preparation.getStatus()).toEqual({
       state: 'error',
-      message: 'Could not prepare slide images automatically. Chromium is missing',
+      message: 'Slide images could not be prepared. Retrying automatically. Chromium is missing',
       failedAt: expect.any(Number),
     })
+  })
+
+  it('recovers automatically from a transient exporter failure', async () => {
+    const runPrepare = vi.fn()
+      .mockRejectedValueOnce(new Error('Temporary browser error'))
+      .mockResolvedValueOnce(undefined)
+    const preparation = createImagePreparation(createOptions({
+      inspect: async () => ({ state: 'ready', message: 'Ready' }),
+      retryDelays: [0],
+      runPrepare,
+    }))
+
+    await preparation.prepare(true)
+
+    expect(runPrepare).toHaveBeenCalledTimes(2)
+    expect(preparation.getStatus().state).toBe('ready')
+  })
+
+  it('retries again after the failure cooldown', async () => {
+    let shouldFail = true
+    const runPrepare = vi.fn(async () => {
+      if (shouldFail)
+        throw new Error('Temporary browser error')
+    })
+    const preparation = createImagePreparation(createOptions({
+      inspect: async () => ({ state: 'ready', message: 'Ready' }),
+      runPrepare,
+    }))
+
+    await preparation.prepare(true)
+    const failedAt = preparation.getStatus().failedAt!
+    shouldFail = false
+
+    expect(preparation.retryIfDue(failedAt + 14_999)).toBe(false)
+    expect(preparation.retryIfDue(failedAt + 15_000)).toBe(true)
+    await vi.waitFor(() => expect(preparation.getStatus().state).toBe('ready'))
+    expect(runPrepare).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -152,19 +190,5 @@ describe('visual source filtering', () => {
     expect(isDeckVisualFile(root, resolve(root, 'node_modules', 'theme', 'style.css'))).toBe(false)
     expect(isDeckVisualFile(root, resolve(root, 'notes.txt'))).toBe(false)
     expect(isDeckVisualFile(root, resolve(root, '..', 'outside.vue'))).toBe(false)
-  })
-})
-
-describe('manual recovery', () => {
-  it('accepts valid images created after an automatic failure', () => {
-    const failure = {
-      state: 'error' as const,
-      message: 'Automatic export failed',
-      failedAt: Date.parse('2026-09-12T12:00:00.000Z'),
-    }
-    const assets = { state: 'ready' as const, message: 'Ready' }
-
-    expect(resolveRuntimeAssetStatus(failure, assets, '2026-09-12T11:59:00.000Z').state).toBe('error')
-    expect(resolveRuntimeAssetStatus(failure, assets, '2026-09-12T12:01:00.000Z').state).toBe('ready')
   })
 })

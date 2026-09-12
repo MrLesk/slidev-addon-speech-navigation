@@ -16,6 +16,7 @@ let mounted = false
 const isActive = computed(() => ['learning', 'connecting', 'listening', 'acting'].includes(status.value))
 const isVisible = computed(() => Boolean(import.meta.hot) && nav.isPresenter.value && !nav.isPrintMode.value)
 const isPreparing = computed(() => config.value?.assets === 'preparing')
+const isUnavailable = computed(() => config.value?.assets === 'error')
 const displayState = computed(() => {
   if (status.value !== 'off')
     return status.value
@@ -31,6 +32,7 @@ const buttonLabel = computed(() => {
   if (status.value === 'acting') return 'Moving…'
   if (status.value === 'listening') return 'Listening'
   if (status.value === 'error') return 'Try again'
+  if (isUnavailable.value) return 'Retrying…'
   if (isPreparing.value) return 'Preparing…'
   return 'Speech nav'
 })
@@ -69,7 +71,7 @@ async function refreshConfig(signal?: AbortSignal) {
     else if (status.value === 'off')
       message.value = 'Speech navigation is off'
 
-    if (runtime.assets === 'preparing')
+    if (runtime.assets === 'preparing' || runtime.assets === 'error')
       scheduleConfigPoll()
     return runtime
   }
@@ -187,7 +189,7 @@ onBeforeUnmount(() => {
     <button
       type="button"
       :aria-pressed="isActive"
-      :disabled="isPreparing"
+      :disabled="isPreparing || isUnavailable"
       :title="message"
       @click="toggle"
     >

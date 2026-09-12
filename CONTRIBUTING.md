@@ -27,7 +27,7 @@ npm run check
 - `src/core/` contains pure window and prompt logic.
 - `setup/vite-plugins.ts` connects the addon to Slidev.
 - `src/server/prepare.ts` refreshes images during normal Slidev development.
-- `bin/` provides the same preparation as a recovery command.
+- `bin/` is the private helper that runs Slidev's renderer.
 
 Start with the pure functions when adding behavior. Keep network and browser
 code at the edges. Add a test for each behavior change. New user settings need
