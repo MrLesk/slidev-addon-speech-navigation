@@ -25,7 +25,7 @@
     "bin",
     "setup",
     "src",
-    "global-top.vue",
+    "custom-nav-controls.vue",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",

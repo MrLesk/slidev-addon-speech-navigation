@@ -43,7 +43,7 @@ You need Slidev 52 or newer, Node.js 22.12 or newer, and an OpenAI API key.
    images change. You do not need to change your existing `dev` script.
 
 Open the **Presenter** link printed by Slidev (normally `/presenter/`) and click
-**Speech nav**. The first start can
+the microphone control labelled **Speech nav** in the navigation bar. The first start can
 take a short time while the addon learns the first group of slides. Allow
 microphone access when the browser asks.
 
@@ -136,7 +136,7 @@ The project is split by responsibility:
 - `src/core` contains small pure functions and prompts.
 - `src/client` handles WebRTC, transcript checkpoints, and stale decisions.
 - `src/server` reads prepared slides and calls OpenAI without exposing the key.
-- `global-top.vue` is the presenter control.
+- `custom-nav-controls.vue` is the presenter toolbar control.
 - `setup/vite-plugins.ts` is the official Slidev addon entry point.
 
 Run `npm run check` before a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md),

@@ -12,3 +12,4 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Load ten-slide visual windows and prefetch the next overlapping window.
 - Prepare and refresh slide images automatically during normal Slidev development.
 - Retry interrupted image preparation automatically without a manual workflow.
+- Add a theme-safe presenter toolbar control with non-blocking status feedback.
