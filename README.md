@@ -7,9 +7,6 @@ It learns the real rendered slides, not only their Markdown. Each slide image is
 paired with its speaker notes. This makes the addon work with different themes,
 layouts, diagrams, images, components, and other addons.
 
-> This is an independent open-source project. It is not an official Slidev or
-> OpenAI product.
-
 ## Install
 
 You need Slidev 52 or newer, Node.js 20.19 or newer, and an OpenAI API key.
