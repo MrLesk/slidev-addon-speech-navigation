@@ -21,7 +21,7 @@ export interface AddonSettings {
 export interface RuntimeConfig {
   ready: boolean
   hasApiKey: boolean
-  assets: 'ready' | 'missing' | 'stale'
+  assets: 'ready' | 'missing' | 'stale' | 'preparing' | 'error'
   message: string
   settings: AddonSettings
 }

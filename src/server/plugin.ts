@@ -19,6 +19,7 @@ import {
   type SlideWindowAnalysis,
 } from '../shared/contracts'
 import { analyzeSlideWindow, OpenAIRequestError, requestNavigationDecision } from './openai'
+import { createImagePreparation, resolveRuntimeAssetStatus } from './prepare'
 import { getAssetGeneration, getWindowCacheKey, inspectAssets, loadPreparedSlides } from './slides'
 
 interface WindowContext {
@@ -30,6 +31,7 @@ export interface SpeechNavigationPluginOptions {
   apiKey?: string
   userRoot: string
   entry: string
+  prepareCommand: string
   slides: () => SlideInfo[]
   settings: AddonSettings
   liveModel?: string
@@ -87,6 +89,21 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
   const navigationModel = options.navigationModel?.trim() || DEFAULT_NAVIGATION_MODEL
   const fetcher = options.fetcher ?? fetch
   const cache = new Map<string, Promise<WindowContext>>()
+  const preparation = createImagePreparation({
+    userRoot: options.userRoot,
+    entry: options.entry,
+    slideCount: () => options.slides().length,
+    prepareCommand: options.prepareCommand,
+    onPrepared: () => cache.clear(),
+  })
+
+  async function getRuntimeAssetStatus(assets: Awaited<ReturnType<typeof inspectAssets>>) {
+    const preparationStatus = preparation.getStatus()
+    const generation = preparationStatus.state === 'error'
+      ? await getAssetGeneration(options.userRoot)
+      : 'missing'
+    return resolveRuntimeAssetStatus(preparationStatus, assets, generation)
+  }
 
   async function learnWindow(window: SlideWindow) {
     const slides = options.slides()
@@ -138,8 +155,9 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
     }
 
     const assets = await inspectAssets(options.userRoot, options.entry, options.slides().length)
-    if (assets.state !== 'ready') {
-      sendJson(res, 409, { error: assets.message, assets: assets.state })
+    const runtimeAssets = await getRuntimeAssetStatus(assets)
+    if (runtimeAssets.state !== 'ready') {
+      sendJson(res, 409, { error: runtimeAssets.message, assets: runtimeAssets.state })
       return false
     }
     return true
@@ -149,6 +167,7 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
     name: 'slidev-addon-speech-navigation',
     apply: 'serve',
     configureServer(server) {
+      preparation.attach(server)
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://localhost')
         const path = url.pathname
@@ -175,12 +194,13 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
               return
             }
             const assets = await inspectAssets(options.userRoot, options.entry, options.slides().length)
-            const ready = Boolean(apiKey) && assets.state === 'ready'
+            const runtimeAssets = await getRuntimeAssetStatus(assets)
+            const ready = Boolean(apiKey) && runtimeAssets.state === 'ready'
             sendJson(res, 200, {
               ready,
               hasApiKey: Boolean(apiKey),
-              assets: assets.state,
-              message: apiKey ? assets.message : 'OPENAI_API_KEY is missing. Add it to .env and restart Slidev.',
+              assets: runtimeAssets.state,
+              message: apiKey ? runtimeAssets.message : 'OPENAI_API_KEY is missing. Add it to .env and restart Slidev.',
               settings: options.settings,
             })
             return

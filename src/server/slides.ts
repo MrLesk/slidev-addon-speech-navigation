@@ -64,7 +64,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
   if (!manifest) {
     return {
       state: 'missing',
-      message: 'Prepare slide images with: npx slidev-speech-navigation prepare',
+      message: 'Slide images are not ready yet. They are prepared automatically when Slidev starts.',
     }
   }
 
@@ -72,7 +72,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
     if (!await findImagePath(userRoot, slideNumber)) {
       return {
         state: 'missing',
-        message: `Prepared image for slide ${slideNumber} is missing. Run: npx slidev-speech-navigation prepare`,
+        message: `Prepared image for slide ${slideNumber} is missing. Restart Slidev to rebuild the images.`,
       }
     }
   }
@@ -84,7 +84,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
   catch {
     return {
       state: 'stale',
-      message: 'The prepared images belong to a missing slide deck. Run: npx slidev-speech-navigation prepare',
+      message: 'The prepared images belong to a missing slide deck. Restart Slidev to rebuild them.',
     }
   }
 
@@ -93,7 +93,7 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
     || sourceMtimeMs > manifest.sourceMtimeMs + 1) {
     return {
       state: 'stale',
-      message: 'Slides changed after the images were prepared. Run: npx slidev-speech-navigation prepare',
+      message: 'Slides changed after their images were prepared. They will be refreshed automatically.',
     }
   }
 

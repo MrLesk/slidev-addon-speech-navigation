@@ -7,7 +7,6 @@ requests are easiest to review.
 
 ```bash
 npm install
-npm run prepare:example
 npm run dev
 ```
 
@@ -27,7 +26,8 @@ npm run check
 - `src/server/` keeps the API key private and calls OpenAI.
 - `src/core/` contains pure window and prompt logic.
 - `setup/vite-plugins.ts` connects the addon to Slidev.
-- `bin/` prepares screenshots through Slidev's own exporter.
+- `src/server/prepare.ts` refreshes images during normal Slidev development.
+- `bin/` provides the same preparation as a recovery command.
 
 Start with the pure functions when adding behavior. Keep network and browser
 code at the edges. Add a test for each behavior change. New user settings need

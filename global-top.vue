@@ -10,15 +10,28 @@ const config = ref<RuntimeConfig | null>(null)
 const status = ref<NavigationStatus>('off')
 const message = ref('Speech navigation is off')
 let sessionAbort: AbortController | null = null
+let configPoll: ReturnType<typeof setTimeout> | null = null
+let mounted = false
 
 const isActive = computed(() => ['learning', 'connecting', 'listening', 'acting'].includes(status.value))
 const isVisible = computed(() => Boolean(import.meta.hot) && nav.isPresenter.value && !nav.isPrintMode.value)
+const isPreparing = computed(() => config.value?.assets === 'preparing')
+const displayState = computed(() => {
+  if (status.value !== 'off')
+    return status.value
+  if (isPreparing.value)
+    return 'preparing'
+  if (config.value && !config.value.ready)
+    return 'error'
+  return 'off'
+})
 const buttonLabel = computed(() => {
   if (status.value === 'learning') return 'Learning…'
   if (status.value === 'connecting') return 'Connecting…'
   if (status.value === 'acting') return 'Moving…'
   if (status.value === 'listening') return 'Listening'
   if (status.value === 'error') return 'Try again'
+  if (isPreparing.value) return 'Preparing…'
   return 'Speech nav'
 })
 
@@ -35,6 +48,35 @@ async function loadConfig(signal?: AbortSignal) {
     throw new Error('Could not reach the local speech navigation service')
   config.value = await response.json() as RuntimeConfig
   return config.value
+}
+
+function scheduleConfigPoll() {
+  if (!mounted)
+    return
+  if (configPoll)
+    clearTimeout(configPoll)
+  configPoll = setTimeout(() => {
+    configPoll = null
+    void refreshConfig().catch(() => {})
+  }, 1_000)
+}
+
+async function refreshConfig(signal?: AbortSignal) {
+  try {
+    const runtime = await loadConfig(signal)
+    if (!runtime.ready)
+      message.value = runtime.message
+    else if (status.value === 'off')
+      message.value = 'Speech navigation is off'
+
+    if (runtime.assets === 'preparing')
+      scheduleConfigPoll()
+    return runtime
+  }
+  catch (error) {
+    message.value = 'Could not reach the local speech navigation service'
+    throw error
+  }
 }
 
 async function execute(tool: NavigationTool) {
@@ -56,9 +98,14 @@ async function toggle() {
   status.value = 'learning'
   message.value = 'Learning this group of slides…'
   try {
-    const runtime = await loadConfig(session.signal)
+    const runtime = await refreshConfig(session.signal)
     if (session.signal.aborted)
       return
+    if (runtime.assets === 'preparing') {
+      sessionAbort = null
+      status.value = 'off'
+      return
+    }
     if (!runtime.ready)
       throw new Error(runtime.message)
 
@@ -122,24 +169,25 @@ const stopWatching = watch(
 )
 
 onMounted(() => {
-  void loadConfig().then((runtime) => {
-    if (!runtime.ready)
-      message.value = runtime.message
-  }).catch(() => {
-    message.value = 'Could not reach the local speech navigation service'
-  })
+  mounted = true
+  if (isVisible.value)
+    void refreshConfig().catch(() => {})
 })
 onBeforeUnmount(() => {
+  mounted = false
+  if (configPoll)
+    clearTimeout(configPoll)
   stopWatching()
   stopSession(false)
 })
 </script>
 
 <template>
-  <div v-if="isVisible" class="speech-navigation" :data-state="status">
+  <div v-if="isVisible" class="speech-navigation" :data-state="displayState">
     <button
       type="button"
       :aria-pressed="isActive"
+      :disabled="isPreparing"
       :title="message"
       @click="toggle"
     >
@@ -182,6 +230,11 @@ onBeforeUnmount(() => {
   background: #fff;
 }
 
+.speech-navigation button:disabled {
+  cursor: wait;
+  opacity: 0.78;
+}
+
 .speech-navigation button:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
@@ -196,7 +249,8 @@ onBeforeUnmount(() => {
 
 [data-state="learning"] .speech-navigation-dot,
 [data-state="connecting"] .speech-navigation-dot,
-[data-state="acting"] .speech-navigation-dot {
+[data-state="acting"] .speech-navigation-dot,
+[data-state="preparing"] .speech-navigation-dot {
   background: #f59e0b;
 }
 

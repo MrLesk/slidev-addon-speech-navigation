@@ -32,24 +32,24 @@ You need Slidev 52 or newer, Node.js 20.19 or newer, and an OpenAI API key.
    OPENAI_API_KEY=your_key_here
    ```
 
-4. Prepare the slide images, then start Slidev:
+4. Start Slidev as usual:
 
    ```bash
-   npx slidev-speech-navigation prepare
    npm run dev
    ```
 
-   If the deck has another filename, pass it explicitly, for example
-   `npx slidev-speech-navigation prepare talk.md`.
+   The addon prepares the slide images in the background on startup. It
+   also refreshes them when deck-local slide content, styles, components, or
+   images change. You do not need to change your existing `dev` script.
 
 Open the **Presenter** link printed by Slidev (normally `/presenter/`) and click
 **Speech nav**. The first start can
 take a short time while the addon learns the first group of slides. Allow
 microphone access when the browser asks.
 
-Run `npx slidev-speech-navigation prepare` again after changing slide content,
-themes, components, or images. The addon blocks startup when `slides.md` is
-newer than its prepared images.
+If automatic preparation fails, run
+`npx slidev-speech-navigation prepare [slides.md]` to see the exporter error
+directly. This is a recovery command, not part of the normal workflow.
 
 ## Speaker notes
 
@@ -95,8 +95,9 @@ defaults. Advanced model overrides are available through
 
 ## How it works
 
-1. The prepare command asks Slidev to export PNG files. The result includes the
-   active theme, layouts, components, and addons.
+1. During normal Slidev startup, the addon uses Slidev's exporter to prepare
+   PNG files in the background. The result includes the active theme, layouts,
+   components, and addons.
 2. At runtime, the addon sends up to ten adjacent images to OpenAI. Each image
    is directly paired with its Slidev speaker notes.
 3. The visual understanding is cached in memory. Near the end of a group, the
@@ -114,13 +115,13 @@ it. Analyses and transcripts are not written to disk.
 
 - Works in Slidev's local presenter view. The local API rejects other computers.
 - Navigates whole slides. Click animations remain under presenter control.
-- Requires prepared PNG files. This gives more stable results than trying to
-  capture theme-dependent browser markup while presenting.
+- Uses prepared PNG files. This gives more stable results than trying to
+  interpret theme-dependent browser markup while presenting.
 - Uses online OpenAI APIs, so accuracy, latency, and usage cost vary by deck and
   network conditions. Rehearse important talks and keep a manual remote ready.
-- Imported Markdown or external visual assets may change without updating the
-  main `slides.md` timestamp. Run the prepare command whenever any visual source
-  changes.
+- Watches visual source files inside the presentation project and refreshes the
+  images after they change. Changes inside installed dependencies take effect
+  after restarting Slidev.
 
 ## Development
 
@@ -128,7 +129,6 @@ it. Analyses and transcripts are not written to disk.
 git clone https://github.com/MrLesk/slidev-addon-speech-navigation.git
 cd slidev-addon-speech-navigation
 npm install
-npm run prepare:example
 npm run dev
 ```
 
