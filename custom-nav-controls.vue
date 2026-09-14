@@ -14,7 +14,7 @@ let configPoll: ReturnType<typeof setTimeout> | null = null
 let mounted = false
 
 const isActive = computed(() => ['learning', 'connecting', 'listening', 'acting'].includes(status.value))
-const isVisible = computed(() => Boolean(import.meta.hot) && nav.isPresenter.value && !nav.isPrintMode.value)
+const isVisible = computed(() => Boolean(import.meta.hot) && window.location.pathname.split('/').includes('presenter'))
 const isPreparing = computed(() => config.value?.assets === 'preparing')
 const isUnavailable = computed(() => config.value?.assets === 'error')
 const displayState = computed(() => {
