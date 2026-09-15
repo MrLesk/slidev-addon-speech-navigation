@@ -1,10 +1,16 @@
 import { defineVitePluginsSetup } from '@slidev/types'
 import { fileURLToPath } from 'node:url'
 import { loadEnv } from 'vite'
-import { parseAddonSettings } from '../src/core/config'
+import { parseAddonSettings, resolveModel } from '../src/core/config'
 import { createSpeechNavigationPlugin } from '../src/server/plugin'
 
 export default defineVitePluginsSetup((options) => {
+  if (process.env.SLIDEV_SPEECH_NAVIGATION_EXPORT === '1') {
+    return [{
+      name: 'speech-navigation-export-cache',
+      config: () => ({ cacheDir: process.env.SLIDEV_SPEECH_NAVIGATION_EXPORT_CACHE }),
+    }]
+  }
   if (options.mode !== 'dev')
     return []
 
@@ -18,9 +24,9 @@ export default defineVitePluginsSetup((options) => {
     prepareCommand: fileURLToPath(new URL('../bin/slidev-speech-navigation.mjs', import.meta.url)),
     slides: () => options.data.slides,
     settings,
-    liveModel: process.env.OPENAI_SPEECH_NAVIGATION_LIVE_MODEL
-      ?? env.OPENAI_SPEECH_NAVIGATION_LIVE_MODEL,
-    navigationModel: process.env.OPENAI_SPEECH_NAVIGATION_MODEL
-      ?? env.OPENAI_SPEECH_NAVIGATION_MODEL,
+    liveModel: resolveModel(process.env.OPENAI_SPEECH_NAVIGATION_LIVE_MODEL,
+      env.OPENAI_SPEECH_NAVIGATION_LIVE_MODEL, ''),
+    navigationModel: resolveModel(process.env.OPENAI_SPEECH_NAVIGATION_MODEL,
+      env.OPENAI_SPEECH_NAVIGATION_MODEL, ''),
   })
 })

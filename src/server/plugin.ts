@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { SlideInfo } from '@slidev/types'
 import type { Plugin } from 'vite'
+import { parseSlideRules, resolveModel } from '../core/config'
 import { buildLiveSession, DEFAULT_LIVE_MODEL, DEFAULT_NAVIGATION_MODEL } from '../core/prompts'
 import {
   getNextSlideWindow,
@@ -39,7 +41,7 @@ export interface SpeechNavigationPluginOptions {
   fetcher?: typeof fetch
 }
 
-const MAX_JSON_BODY_BYTES = 64 * 1_024
+const MAX_JSON_BODY_BYTES = 256 * 1_024
 const MAX_LIVE_BODY_BYTES = 256 * 1_024
 
 function isLoopbackRequest(req: IncomingMessage) {
@@ -67,7 +69,7 @@ async function readJson(req: IncomingMessage, maxBytes: number): Promise<unknown
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
 }
 
-function readState(value: unknown, actualTotal: number): NavigationState | null {
+export function readState(value: unknown, actualTotal: number): NavigationState | null {
   if (!value || typeof value !== 'object')
     return null
   const input = value as Record<string, unknown>
@@ -77,16 +79,25 @@ function readState(value: unknown, actualTotal: number): NavigationState | null 
     || (input.currentSlide as number) < 1
     || (input.currentSlide as number) > actualTotal)
     return null
+  const currentClick = input.currentClick ?? 0
+  const totalClicks = input.totalClicks ?? 0
+  if (!Number.isInteger(currentClick) || !Number.isInteger(totalClicks)
+    || (currentClick as number) < 0 || (totalClicks as number) < (currentClick as number)
+    || (totalClicks as number) > 10_000)
+    return null
   return {
+    currentClick: currentClick as number,
+    totalClicks: totalClicks as number,
     currentSlide: input.currentSlide as number,
     totalSlides: actualTotal,
   }
 }
 
 export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOptions): Plugin {
+  const instanceId = randomUUID()
   const apiKey = options.apiKey?.trim() ?? ''
-  const liveModel = options.liveModel?.trim() || DEFAULT_LIVE_MODEL
-  const navigationModel = options.navigationModel?.trim() || DEFAULT_NAVIGATION_MODEL
+  const liveModel = resolveModel(options.liveModel, options.settings.liveModel, DEFAULT_LIVE_MODEL)
+  const navigationModel = resolveModel(options.navigationModel, options.settings.model, DEFAULT_NAVIGATION_MODEL)
   const fetcher = options.fetcher ?? fetch
   const cache = new Map<string, Promise<WindowContext>>()
   const preparation = createImagePreparation({
@@ -115,7 +126,7 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
     return resolveRuntimeAssetStatus(preparationStatus, assets)
   }
 
-  async function learnWindow(window: SlideWindow) {
+  async function learnWindow(window: SlideWindow, fastMode = options.settings.fastMode !== false) {
     const slides = options.slides()
     const assetGeneration = await getAssetGeneration(options.userRoot)
     const cacheKey = getWindowCacheKey(slides, window, assetGeneration)
@@ -125,7 +136,7 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
 
     const pending = (async () => {
       const preparedSlides = await loadPreparedSlides(options.userRoot, slides, window)
-      const analysis = await analyzeSlideWindow(apiKey, preparedSlides, navigationModel, fetcher)
+      const analysis = await analyzeSlideWindow(apiKey, preparedSlides, navigationModel, fetcher, fastMode)
       return { preparedSlides, analysis }
     })()
     cache.set(cacheKey, pending)
@@ -142,15 +153,15 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
     }
   }
 
-  async function learnForSlide(currentSlide: number, includeNext: boolean) {
+  async function learnForSlide(currentSlide: number, includeNext: boolean, fastMode = options.settings.fastMode !== false) {
     const totalSlides = options.slides().length
     const window = getSlideWindow(currentSlide, totalSlides)
-    const current = await learnWindow(window)
+    const current = await learnWindow(window, fastMode)
 
     if (includeNext && shouldPrefetch(currentSlide, window, totalSlides)) {
       const next = getNextSlideWindow(window, totalSlides)
       if (next)
-        await learnWindow(next)
+        await learnWindow(next, fastMode)
     }
 
     return current
@@ -210,6 +221,10 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
               ready,
               hasApiKey: Boolean(apiKey),
               assets: runtimeAssets.state,
+              assetMessage: runtimeAssets.message,
+              contextVersion: runtimeAssets.state === 'ready'
+                ? `${instanceId}:${await getAssetGeneration(options.userRoot)}:${options.slides().map(slide => slide.revision).join('|')}`
+                : undefined,
               message: apiKey ? runtimeAssets.message : 'OPENAI_API_KEY is missing. Add it to .env and restart Slidev.',
               settings: options.settings,
             })
@@ -287,8 +302,9 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
             return
           }
 
+          const fastMode = typeof body.fastMode === 'boolean' ? body.fastMode : options.settings.fastMode !== false
           if (path === PREFETCH_PATH) {
-            const context = await learnForSlide(state.currentSlide, true)
+            const context = await learnForSlide(state.currentSlide, true, fastMode)
             sendJson(res, 200, {
               ready: true,
               window: { start: context.analysis.start, end: context.analysis.end },
@@ -296,20 +312,36 @@ export function createSpeechNavigationPlugin(options: SpeechNavigationPluginOpti
             return
           }
 
-          if (typeof body.transcript !== 'string' || !body.transcript.trim()) {
+          if (typeof body.transcript !== 'string'
+            || (!body.transcript.trim() && !(typeof body.slideTranscript === 'string' && body.slideTranscript.trim()))) {
             sendJson(res, 400, { error: 'A non-empty transcript is required' })
             return
           }
-          const context = await learnForSlide(state.currentSlide, false)
+          const rules = parseSlideRules(options.slides()[state.currentSlide - 1]?.frontmatter?.speechNavigation, options.settings)
+          if (rules.hold) {
+            sendJson(res, 200, { tool: 'hold_slide', reason: 'This slide uses manual control.' })
+            return
+          }
+          const context = await learnForSlide(state.currentSlide, false, fastMode)
+          const steps = context.preparedSlides.find(slide => slide.number === state.currentSlide)?.steps ?? []
+          const currentClick = state.currentClick ?? 0
+          if (!steps.some(step => step.click === currentClick)
+            || steps.at(-1)?.click !== (state.totalClicks ?? 0)
+            || (currentClick < (state.totalClicks ?? 0) && !steps.some(step => step.click === currentClick + 1))) {
+            sendJson(res, 200, { tool: 'hold_slide', reason: 'Slide steps changed. Wait for image preparation.' })
+            return
+          }
           const decision = await requestNavigationDecision(
             apiKey,
             state,
             body.transcript,
             context.preparedSlides,
             context.analysis,
-            options.settings,
+            { ...options.settings, fastMode },
             navigationModel,
             fetcher,
+            rules,
+            typeof body.slideTranscript === 'string' ? body.slideTranscript.slice(-24_000) : body.transcript,
           )
           sendJson(res, 200, decision)
         }

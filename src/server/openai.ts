@@ -1,3 +1,4 @@
+import { constrainDecision } from '../core/navigation'
 import {
   ANALYSIS_TOOL,
   buildNavigationRequest,
@@ -11,6 +12,7 @@ import type {
   PreparedSlide,
   SlideUnderstanding,
   SlideWindowAnalysis,
+  SlideRules,
 } from '../shared/contracts'
 
 interface FunctionCall {
@@ -127,10 +129,11 @@ export async function analyzeSlideWindow(
   preparedSlides: PreparedSlide[],
   model: string,
   fetcher: typeof fetch = fetch,
+  fastMode = true,
 ): Promise<SlideWindowAnalysis> {
   const response = await requestOpenAI(
     apiKey,
-    buildWindowAnalysisRequest(preparedSlides, model),
+    buildWindowAnalysisRequest(preparedSlides, model, fastMode),
     fetcher,
     45_000,
   )
@@ -164,7 +167,7 @@ export async function analyzeSlideWindow(
   }
 }
 
-const navigationToolNames: readonly NavigationTool[] = ['next_slide', 'previous_slide', 'hold_slide']
+const navigationToolNames: readonly NavigationTool[] = ['next_slide', 'previous_slide', 'hold_slide', 'reveal_next']
 
 export async function requestNavigationDecision(
   apiKey: string,
@@ -175,10 +178,12 @@ export async function requestNavigationDecision(
   settings: AddonSettings,
   model: string,
   fetcher: typeof fetch = fetch,
+  rules: SlideRules = { hold: false, reveals: settings.reveals ?? 'manual' },
+  slideTranscript = transcript,
 ): Promise<NavigationDecision> {
   const response = await requestOpenAI(
     apiKey,
-    buildNavigationRequest(state, transcript, preparedSlides, analysis, settings, model),
+    buildNavigationRequest(state, transcript, preparedSlides, analysis, settings, model, rules, slideTranscript),
     fetcher,
     8_000,
   )
@@ -186,7 +191,9 @@ export async function requestNavigationDecision(
   if (!call)
     throw new OpenAIRequestError('OpenAI did not choose a navigation action')
 
-  return {
-    tool: call.name as NavigationTool,
-  }
+  let args: { reason?: unknown }
+  try { args = JSON.parse(call.arguments) }
+  catch { throw new OpenAIRequestError('OpenAI returned invalid navigation details') }
+  const reason = typeof args?.reason === 'string' ? args.reason.trim().slice(0, 180) : undefined
+  return constrainDecision({ tool: call.name as NavigationTool, ...(reason ? { reason } : {}) }, state, rules)
 }

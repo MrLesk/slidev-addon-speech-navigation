@@ -1,39 +1,101 @@
 <script setup lang="ts">
 import { useNav } from '@slidev/client'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { parseSlideRules } from './src/core/config'
+import { constrainDecision } from './src/core/navigation'
 import { prefetchSlideWindow, SpeechDirector } from './src/client/director'
-import { CONFIG_PATH, type NavigationState, type NavigationStatus, type NavigationTool, type RuntimeConfig } from './src/shared/contracts'
+import { createRuntimePoller } from './src/client/runtime'
+import { createSlideWarmup, type WarmupStatus } from './src/client/warmup'
+import { CONFIG_PATH, type DecisionFeedback, type NavigationMode, type NavigationState, type NavigationStatus, type NavigationTool, type RuntimeConfig } from './src/shared/contracts'
 
 const nav = useNav()
 const director = shallowRef<SpeechDirector | null>(null)
 const config = ref<RuntimeConfig | null>(null)
 const status = ref<NavigationStatus>('off')
+const panelOpen = ref(false)
+const optionsButton = ref<HTMLButtonElement | null>(null)
+const mode = ref<NavigationMode>('auto')
+const transcript = ref('')
+const heardElement = ref<HTMLElement | null>(null)
+const fastMode = ref(true)
+watch([transcript, panelOpen], async () => {
+  await nextTick()
+  if (heardElement.value)
+    heardElement.value.scrollTop = heardElement.value.scrollHeight
+})
+const feedback = shallowRef<DecisionFeedback | null>(null)
+let modeInitialized = false
+const currentRules = computed(() => parseSlideRules(nav.currentSlideRoute.value.meta.slide.frontmatter.speechNavigation,
+  config.value?.settings ?? { behavior: 'balanced' }))
+const actionLabels = { next_slide: 'Next slide', previous_slide: 'Previous slide', hold_slide: 'Keep this slide', reveal_next: 'Show next item' }
+
 const message = ref('Speech navigation is off')
 let sessionAbort: AbortController | null = null
-let configPoll: ReturnType<typeof setTimeout> | null = null
-let mounted = false
+const configError = ref('')
+const runtimePoller = createRuntimePoller(refreshConfig)
+const warmupStatus = ref<WarmupStatus>('waiting')
+const warmupMessage = ref('Waiting for slide images…')
+const warmup = createSlideWarmup((state, signal) => prefetchSlideWindow(state, signal, fastMode.value), (state, text) => {
+  warmupStatus.value = state
+  warmupMessage.value = text
+})
 
-const isActive = computed(() => ['learning', 'connecting', 'listening', 'acting'].includes(status.value))
+function prepareForPresenter(retry = false) {
+  const runtime = config.value
+  if (!runtime?.ready) {
+    warmup.reset()
+    return Promise.resolve()
+  }
+  return warmup.ensure(currentState(), runtime.contextVersion ?? 'legacy', retry)
+}
+
+const isActive = computed(() => ['learning', 'connecting', 'listening', 'rehearsing', 'paused', 'acting'].includes(status.value))
+const canPause = computed(() => ['listening', 'rehearsing', 'acting', 'paused'].includes(status.value))
+const primaryActionLabel = computed(() => {
+  if (status.value === 'paused') return 'Resume speech navigation'
+  if (canPause.value) return 'Pause speech navigation'
+  if (isActive.value) return 'Cancel speech navigation startup'
+  return 'Start speech navigation'
+})
 const isVisible = computed(() => Boolean(import.meta.hot) && window.location.pathname.split('/').includes('presenter'))
-const isPreparing = computed(() => config.value?.assets === 'preparing')
+const isPreparing = computed(() => !configError.value && (!config.value || ['missing', 'stale', 'preparing'].includes(config.value.assets)))
 const isUnavailable = computed(() => config.value?.assets === 'error')
 const displayState = computed(() => {
   if (status.value !== 'off')
     return status.value
+  if (configError.value)
+    return 'error'
   if (isPreparing.value)
     return 'preparing'
   if (config.value && !config.value.ready)
     return 'error'
-  return 'off'
+  if (warmupStatus.value === 'learning') return 'learning'
+  if (warmupStatus.value === 'error') return 'error'
+  return warmupStatus.value === 'ready' ? 'ready' : 'off'
 })
+const preparationMessage = computed(() => {
+  if (configError.value) return configError.value
+  if (!config.value) return 'Checking slide images…'
+  if (config.value.assetMessage) return config.value.assetMessage
+  if (config.value.assets === 'ready') return `Ready with ${nav.total.value} prepared slides`
+  return config.value.message
+})
+const idleMessage = computed(() => configError.value || (config.value?.ready ? warmupMessage.value : config.value?.message) || 'Checking slide images…')
+const displayMessage = computed(() => status.value === 'off' ? idleMessage.value : message.value)
 const buttonLabel = computed(() => {
   if (status.value === 'learning') return 'Learning…'
   if (status.value === 'connecting') return 'Connecting…'
   if (status.value === 'acting') return 'Moving…'
   if (status.value === 'listening') return 'Listening'
+  if (status.value === 'paused') return 'Paused'
+  if (status.value === 'rehearsing') return 'Rehearsal'
   if (status.value === 'error') return 'Try again'
+  if (configError.value) return 'Reconnecting…'
   if (isUnavailable.value) return 'Retrying…'
   if (isPreparing.value) return 'Preparing…'
+  if (warmupStatus.value === 'learning') return 'Learning slides…'
+  if (warmupStatus.value === 'error') return 'Retry preparation'
+  if (warmupStatus.value === 'ready') return 'Ready'
   return 'Speech nav'
 })
 
@@ -41,6 +103,8 @@ function currentState(): NavigationState {
   return {
     currentSlide: nav.currentSlideNo.value,
     totalSlides: nav.total.value,
+    currentClick: nav.clicks.value,
+    totalClicks: nav.clicksTotal.value,
   }
 }
 
@@ -48,41 +112,35 @@ async function loadConfig(signal?: AbortSignal) {
   const response = await fetch(CONFIG_PATH, { cache: 'no-store', signal })
   if (!response.ok)
     throw new Error('Could not reach the local speech navigation service')
-  config.value = await response.json() as RuntimeConfig
+  const runtime = await response.json() as RuntimeConfig
+  signal?.throwIfAborted()
+  config.value = runtime
+  configError.value = ''
+  if (!modeInitialized) {
+    mode.value = config.value.settings.mode ?? 'auto'
+    fastMode.value = config.value.settings.fastMode !== false
+    modeInitialized = true
+  }
+  void prepareForPresenter().catch(() => {})
   return config.value
-}
-
-function scheduleConfigPoll() {
-  if (!mounted)
-    return
-  if (configPoll)
-    clearTimeout(configPoll)
-  configPoll = setTimeout(() => {
-    configPoll = null
-    void refreshConfig().catch(() => {})
-  }, 1_000)
 }
 
 async function refreshConfig(signal?: AbortSignal) {
   try {
-    const runtime = await loadConfig(signal)
-    if (!runtime.ready)
-      message.value = runtime.message
-    else if (status.value === 'off')
-      message.value = 'Speech navigation is off'
-
-    if (runtime.assets === 'preparing' || runtime.assets === 'error')
-      scheduleConfigPoll()
-    return runtime
+    return await loadConfig(signal)
   }
   catch (error) {
-    message.value = 'Could not reach the local speech navigation service'
+    if (!signal?.aborted)
+      configError.value = 'Could not reach the local speech navigation service. Retrying…'
     throw error
   }
 }
 
 async function execute(tool: NavigationTool) {
-  if (tool === 'next_slide' && nav.currentSlideNo.value < nav.total.value)
+  tool = constrainDecision({ tool }, currentState(), currentRules.value).tool
+  if (tool === 'reveal_next')
+    await nav.next()
+  else if (tool === 'next_slide' && nav.currentSlideNo.value < nav.total.value)
     await nav.nextSlide()
   else if (tool === 'previous_slide' && nav.currentSlideNo.value > 1)
     await nav.prevSlide()
@@ -90,6 +148,10 @@ async function execute(tool: NavigationTool) {
 }
 
 async function toggle() {
+  if (canPause.value) {
+    togglePause()
+    return
+  }
   if (sessionAbort || director.value) {
     stopSession()
     return
@@ -97,8 +159,8 @@ async function toggle() {
 
   const session = new AbortController()
   sessionAbort = session
-  status.value = 'learning'
-  message.value = 'Learning this group of slides…'
+  status.value = 'connecting'
+  message.value = 'Checking speech navigation…'
   try {
     const runtime = await refreshConfig(session.signal)
     if (session.signal.aborted)
@@ -111,13 +173,18 @@ async function toggle() {
     if (!runtime.ready)
       throw new Error(runtime.message)
 
-    await prefetchSlideWindow(currentState(), session.signal)
+    await prepareForPresenter(true)
     if (session.signal.aborted)
       return
 
     const instance = new SpeechDirector({
       getState: currentState,
       execute,
+      mode: mode.value,
+      fastMode: fastMode.value,
+      getRules: () => currentRules.value,
+      onTranscript(value) { transcript.value = value },
+      onDecision(value) { feedback.value = value },
       onStatus(nextStatus, nextMessage) {
         if (director.value !== instance)
           return
@@ -158,27 +225,45 @@ function stopSession(showStatus = true) {
   }
 }
 
+function closePanel() {
+  panelOpen.value = false
+  optionsButton.value?.focus()
+}
+
+function togglePause() {
+  if (status.value === 'paused')
+    director.value?.resume()
+  else
+    director.value?.pause()
+}
+
+watch(mode, value => director.value?.setMode(value))
+watch(fastMode, value => director.value?.setFastMode(value))
+watch(
+  [() => currentRules.value.hold, () => currentRules.value.reveals],
+  () => director.value?.updateRules(),
+)
+
 let previousState = currentState()
 const stopWatching = watch(
-  [nav.currentSlideNo, nav.total],
+  [nav.currentSlideNo, nav.total, nav.clicks, nav.clicksTotal],
   () => {
     const nextState = currentState()
     director.value?.updateSlideState(previousState, nextState)
     previousState = nextState
+    void prepareForPresenter().catch(() => {})
     if (director.value && sessionAbort)
-      void prefetchSlideWindow(nextState, sessionAbort.signal).catch(() => {})
+      void prefetchSlideWindow(nextState, sessionAbort.signal, fastMode.value).catch(() => {})
   },
 )
 
 onMounted(() => {
-  mounted = true
   if (isVisible.value)
-    void refreshConfig().catch(() => {})
+    runtimePoller.start()
 })
 onBeforeUnmount(() => {
-  mounted = false
-  if (configPoll)
-    clearTimeout(configPoll)
+  runtimePoller.stop()
+  warmup.stop()
   stopWatching()
   stopSession(false)
 })
@@ -189,32 +274,77 @@ onBeforeUnmount(() => {
     <button
       type="button"
       class="slidev-icon-btn speech-navigation-trigger"
-      :aria-pressed="isActive"
-      :disabled="isPreparing || isUnavailable"
-      :aria-label="buttonLabel"
-      :title="`${buttonLabel} — ${message}`"
+      :disabled="!isActive && (isPreparing || isUnavailable || warmupStatus === 'learning')"
+      :aria-label="primaryActionLabel"
+      :title="`${primaryActionLabel} — ${buttonLabel}: ${displayMessage}`"
       @click="toggle"
     >
       <span class="speech-navigation-aura" aria-hidden="true" />
       <span class="speech-navigation-glyph" aria-hidden="true">
-        <svg viewBox="0 0 24 24" role="presentation">
+        <svg v-if="status === 'paused'" viewBox="0 0 24 24" role="presentation">
+          <path class="speech-navigation-solid" d="m8 5 11 7-11 7Z" />
+        </svg>
+        <svg v-else-if="canPause" viewBox="0 0 24 24" role="presentation">
+          <path class="speech-navigation-solid" d="M6 5h4v14H6zM14 5h4v14h-4z" />
+        </svg>
+        <svg v-else-if="isActive" viewBox="0 0 24 24" role="presentation">
+          <path d="m6 6 12 12M18 6 6 18" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" role="presentation">
           <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
           <path d="M6.75 11.25V12a5.25 5.25 0 0 0 10.5 0v-.75M12 17.25V21M9.25 21h5.5" />
         </svg>
-        <span class="speech-navigation-live-dot" />
+        <span v-if="!isActive" class="speech-navigation-live-dot" />
       </span>
     </button>
 
-    <div class="speech-navigation-panel" aria-hidden="true">
-      <span class="speech-navigation-kicker">
-        <span class="speech-navigation-panel-dot" />
-        Speech navigation
-      </span>
-      <span class="speech-navigation-message">{{ message }}</span>
+    <span v-if="!isActive" class="speech-navigation-preparation" :title="idleMessage">{{ buttonLabel }}</span>
+
+    <button v-if="canPause" type="button" class="speech-navigation-stop" aria-label="Stop speech navigation" title="Stop speech navigation" @click="stopSession()">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" /></svg>
+    </button>
+
+    <button ref="optionsButton" type="button" class="speech-navigation-options" aria-label="Speech controls" :aria-expanded="panelOpen" aria-controls="speech-controls-panel" @click="panelOpen = !panelOpen">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 4v16M12 4v16M19 4v16M2 8h6M9 16h6M16 10h6" /></svg>
+    </button>
+    <div v-if="panelOpen" id="speech-controls-panel" class="speech-navigation-panel" role="region" aria-label="Speech controls" @keydown.esc.stop="closePanel">
+      <div class="speech-navigation-panel-header">
+        <span class="speech-navigation-kicker"><span class="speech-navigation-panel-dot" />Speech navigation</span>
+        <button type="button" class="speech-navigation-close" aria-label="Close speech controls" title="Close" @click.stop="closePanel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+      </div>
+      <strong class="speech-navigation-message" role="status">{{ displayMessage }}</strong>
+      <p v-if="preparationMessage !== displayMessage" class="speech-help speech-preparation-detail">{{ preparationMessage }}</p>
+      <label class="speech-control-row">Mode
+        <select v-model="mode" aria-label="Navigation mode">
+          <option value="auto">Automatic</option>
+          <option value="rehearsal">Rehearsal</option>
+        </select>
+      </label>
+      <label class="speech-control-row speech-fast-mode"><span>Fast mode (API)</span>
+        <input v-model="fastMode" type="checkbox" aria-label="Fast mode (API)" />
+      </label>
+      <p class="speech-help">Faster slide analysis and decisions. Higher API cost.</p>
+      <p v-if="mode === 'rehearsal'" class="speech-help">Suggestions only. Use manual controls to change slides and show items.</p>
+      <div class="speech-control-row">
+        <span>Slide {{ nav.currentSlideNo.value }}<template v-if="nav.clicksTotal.value"> · Step {{ nav.clicks.value }}/{{ nav.clicksTotal.value }}</template></span>
+      </div>
+      <p v-if="currentRules.hold" class="speech-help">Manual hold. Use the slide controls to leave this slide.</p>
+      <p v-else-if="nav.clicks.value < nav.clicksTotal.value" class="speech-help">Reveals: {{ currentRules.reveals === 'speech' ? 'follow speech' : 'manual clicks' }}</p>
+      <div class="speech-feedback">
+        <span class="speech-detail-label">Heard</span>
+        <p ref="heardElement" class="speech-transcript">{{ transcript || 'Waiting for speech…' }}</p>
+        <template v-if="feedback">
+          <span class="speech-detail-label">{{ feedback.applied ? 'Last action' : 'Suggestion' }}</span>
+          <strong>{{ actionLabels[feedback.decision.tool] }}</strong>
+          <p v-if="feedback.decision.reason">{{ feedback.decision.reason }}</p>
+        </template>
+      </div>
     </div>
 
     <span class="speech-navigation-announcer" role="status" aria-live="polite">
-      {{ message }}
+      {{ displayMessage }}
     </span>
   </div>
 </template>
@@ -238,6 +368,7 @@ onBeforeUnmount(() => {
   --speech-accent-rgb: 217 119 6;
 }
 
+.speech-navigation[data-state="ready"],
 .speech-navigation[data-state="listening"] {
   --speech-accent: #059669;
   --speech-accent-rgb: 5 150 105;
@@ -247,6 +378,8 @@ onBeforeUnmount(() => {
   --speech-accent: #e11d48;
   --speech-accent-rgb: 225 29 72;
 }
+
+.speech-navigation-preparation { font-size: .7rem; font-weight: 500; color: var(--speech-accent); margin: 0 .4rem 0 .35rem; white-space: nowrap; }
 
 .speech-navigation-trigger {
   position: relative;
@@ -335,6 +468,11 @@ onBeforeUnmount(() => {
   stroke-width: 1.75;
 }
 
+.speech-navigation-glyph .speech-navigation-solid {
+  fill: currentColor;
+  stroke: none;
+}
+
 .speech-navigation-live-dot {
   position: absolute;
   right: -0.18rem;
@@ -353,8 +491,10 @@ onBeforeUnmount(() => {
   bottom: calc(100% + 0.72rem);
   display: grid;
   gap: 0.22rem;
-  width: max-content;
-  max-width: min(19rem, calc(100vw - 1.5rem));
+  width: 21rem;
+  max-width: calc(100vw - 1.5rem);
+  max-height: min(36rem, calc(100vh - 5rem));
+  overflow-y: auto;
   padding: 0.72rem 0.82rem 0.78rem;
   overflow-wrap: anywhere;
   border: 1px solid rgb(15 23 42 / 10%);
@@ -364,11 +504,11 @@ onBeforeUnmount(() => {
   box-shadow:
     0 2px 5px rgb(15 23 42 / 8%),
     0 14px 36px rgb(15 23 42 / 16%);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(0.35rem) scale(0.98);
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
   transform-origin: bottom right;
-  visibility: hidden;
+  visibility: visible;
   backdrop-filter: blur(18px) saturate(1.25);
   transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
 }
@@ -386,16 +526,40 @@ onBeforeUnmount(() => {
   transform: rotate(45deg);
 }
 
-.speech-navigation:hover .speech-navigation-panel,
-.speech-navigation-trigger:focus-visible ~ .speech-navigation-panel,
-.speech-navigation[data-state="learning"] .speech-navigation-panel,
-.speech-navigation[data-state="connecting"] .speech-navigation-panel,
-.speech-navigation[data-state="acting"] .speech-navigation-panel,
-.speech-navigation[data-state="preparing"] .speech-navigation-panel,
-.speech-navigation[data-state="error"] .speech-navigation-panel {
+.speech-navigation-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.speech-navigation-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  color: inherit;
+  background: transparent;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.speech-navigation-close:hover {
+  background: rgb(100 116 139 / 12%);
   opacity: 1;
-  transform: translateY(0) scale(1);
-  visibility: visible;
+}
+
+.speech-navigation-close svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
 }
 
 .speech-navigation-kicker {
@@ -495,4 +659,23 @@ onBeforeUnmount(() => {
     transition-duration: 0.01ms !important;
   }
 }
+
+.speech-navigation-stop, .speech-navigation-options { width: 1.8rem; height: 2.35rem; display: grid; place-items: center; border-radius: .5rem; color: #64748b; }
+.speech-navigation-stop svg, .speech-navigation-options svg { width: 1rem; height: 1rem; }
+.speech-navigation-stop:hover, .speech-navigation-options:hover { background: rgb(100 116 139 / 12%); }
+.speech-navigation-stop:focus-visible, .speech-navigation-options:focus-visible, .speech-navigation-panel button:focus-visible, .speech-navigation-panel select:focus-visible { outline: 2px solid #6366f1; outline-offset: 3px; }
+.speech-control-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; margin-top: .65rem; font-size: .8rem; }
+.speech-control-row button, .speech-control-row select { border: 1px solid rgb(100 116 139 / 30%); border-radius: .4rem; padding: .3rem .55rem; background: transparent; color: inherit; font: inherit; }
+.speech-fast-mode input { width: 1rem; height: 1rem; accent-color: #6366f1; cursor: pointer; }
+.speech-fast-mode input:focus-visible { outline: 2px solid #6366f1; outline-offset: 3px; }
+.speech-control-row button:disabled { opacity: .4; cursor: not-allowed; }
+.speech-help { font-size: .75rem; line-height: 1.4; color: #64748b; margin: .4rem 0 0; }
+.speech-feedback { display: grid; gap: .3rem; margin-top: .7rem; padding-top: .7rem; border-top: 1px solid rgb(100 116 139 / 20%); font-size: .8rem; line-height: 1.4; }
+.speech-feedback p { margin: 0; }
+.speech-detail-label { color: #64748b; font-size: .65rem; text-transform: uppercase; letter-spacing: .06em; }
+.speech-transcript { max-height: 6rem; overflow-y: auto; white-space: pre-wrap; margin-bottom: .5rem !important; }
+.speech-navigation[data-state="rehearsing"] { --speech-accent: #6366f1; --speech-accent-rgb: 99 102 241; }
+.speech-navigation[data-state="paused"] { --speech-accent: #d97706; --speech-accent-rgb: 217 119 6; }
+:global(.dark .speech-help), :global(.dark .speech-detail-label) { color: #a3b1c6; }
+
 </style>

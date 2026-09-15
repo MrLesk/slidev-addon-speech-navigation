@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { SlideInfo } from '@slidev/types'
 import type { PreparedSlide } from '../shared/contracts'
@@ -7,6 +7,9 @@ import type { SlideWindow } from '../core/window'
 const ASSET_DIRECTORY = '.slidev-speech-navigation'
 
 interface AssetManifest {
+  version?: number
+  images?: string[]
+  imageDirectory?: string
   entry: string
   sourceMtimeMs: number
   slideCount: number
@@ -22,8 +25,11 @@ function getAssetRoot(userRoot: string) {
   return resolve(userRoot, ASSET_DIRECTORY)
 }
 
-function getImageCandidates(userRoot: string, slideNumber: number) {
-  const imageRoot = resolve(getAssetRoot(userRoot), 'slides')
+function getImageRoot(userRoot: string, manifest: AssetManifest | null) {
+  return resolve(getAssetRoot(userRoot), manifest?.imageDirectory ?? 'slides')
+}
+
+function getImageCandidates(imageRoot: string, slideNumber: number) {
   return [
     resolve(imageRoot, `${String(slideNumber).padStart(2, '0')}.png`),
     resolve(imageRoot, `${slideNumber}.png`),
@@ -39,6 +45,9 @@ async function readManifest(userRoot: string) {
       || typeof value.slideCount !== 'number'
       || typeof value.generatedAt !== 'string')
       return null
+    if (value.imageDirectory !== undefined
+      && (typeof value.imageDirectory !== 'string' || !/^generation-[a-f0-9-]+$/.test(value.imageDirectory)))
+      return null
     return value as AssetManifest
   }
   catch {
@@ -46,8 +55,8 @@ async function readManifest(userRoot: string) {
   }
 }
 
-async function findImagePath(userRoot: string, slideNumber: number) {
-  for (const candidate of getImageCandidates(userRoot, slideNumber)) {
+async function findImagePath(imageRoot: string, slideNumber: number) {
+  for (const candidate of getImageCandidates(imageRoot, slideNumber)) {
     try {
       await stat(candidate)
       return candidate
@@ -68,13 +77,23 @@ export async function inspectAssets(userRoot: string, entry: string, slideCount:
     }
   }
 
+  if (manifest.version !== 2 || !Array.isArray(manifest.images)
+    || !manifest.images.every(file => typeof file === 'string' && /^\d+(?:-\d+)?\.png$/.test(file)))
+    return { state: 'stale', message: 'Preparing images for each reveal step…' }
+
+  const imageRoot = getImageRoot(userRoot, manifest)
   for (let slideNumber = 1; slideNumber <= slideCount; slideNumber += 1) {
-    if (!await findImagePath(userRoot, slideNumber)) {
+    if (!await findImagePath(imageRoot, slideNumber)) {
       return {
         state: 'missing',
         message: `Prepared image for slide ${slideNumber} is missing. Rebuilding the images automatically.`,
       }
     }
+  }
+
+  for (const file of manifest.images) {
+    try { await stat(resolve(imageRoot, file)) }
+    catch { return { state: 'missing', message: 'A reveal image is missing. Rebuilding the images automatically.' } }
   }
 
   let sourceMtimeMs = 0
@@ -113,20 +132,31 @@ export async function loadPreparedSlides(
   window: SlideWindow,
 ): Promise<PreparedSlide[]> {
   const prepared: PreparedSlide[] = []
+  const imageRoot = getImageRoot(userRoot, await readManifest(userRoot))
+  const files = await readdir(imageRoot)
 
   for (const number of window.numbers) {
     const source = slides[number - 1]
-    const imagePath = await findImagePath(userRoot, number)
+    const imagePath = await findImagePath(imageRoot, number)
     if (!source || !imagePath)
       throw new Error(`Prepared image for slide ${number} is missing`)
 
-    const image = await readFile(imagePath)
+    const start = Number.isInteger(source.frontmatter?.clicksStart) ? source.frontmatter.clicksStart as number : 0
+    const candidates = files.flatMap((file) => {
+      const match = /^(\d+)-(\d+)\.png$/.exec(file)
+      return match && Number(match[1]) === number ? [{ click: Number(match[2]), file }] : []
+    }).filter(step => step.click > start).sort((a, b) => a.click - b.click)
+    const steps = [{ click: start, imageDataUrl: `data:image/png;base64,${(await readFile(imagePath)).toString('base64')}` }]
+    for (const step of candidates) {
+      steps.push({ click: step.click, imageDataUrl: `data:image/png;base64,${(await readFile(resolve(imageRoot, step.file))).toString('base64')}` })
+    }
     prepared.push({
       number,
       title: source.title?.trim() || `Slide ${number}`,
       notes: source.note?.trim() || '',
       revision: source.revision,
-      imageDataUrl: `data:image/png;base64,${image.toString('base64')}`,
+      imageDataUrl: steps.at(-1)!.imageDataUrl,
+      steps,
     })
   }
 

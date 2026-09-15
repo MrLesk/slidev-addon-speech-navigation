@@ -6,6 +6,7 @@ addons:
 speechNavigation:
   language: en
   behavior: balanced
+  reveals: speech
 ---
 
 # Speech Navigation
@@ -18,9 +19,13 @@ An example deck for visual, note-aware slide control
 
 # Three inputs
 
+<v-clicks>
+
 - Live presenter speech
 - The rendered slide image
 - Private speaker notes
+
+</v-clicks>
 
 <!-- Introduce the three sources. The image matters because Markdown alone misses layout and visual meaning. -->
 
@@ -119,6 +124,8 @@ AI can be late or wrong. Keep manual controls available for important talks.
 
 ---
 layout: center
+speechNavigation:
+  hold: true
 ---
 
 # Thank you

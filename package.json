@@ -35,7 +35,7 @@
   ],
   "scripts": {
     "dev": "cd example && slidev slides.md --open",
-    "verify:export": "node ./bin/slidev-speech-navigation.mjs example/slides.md",
+    "verify:export": "node ./scripts/verify-export.mjs",
     "build:example": "cd example && slidev build slides.md --out dist",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -63,5 +63,8 @@
     "node": ">=22.12.0",
     "slidev": ">=52.0.0"
   },
-  "packageManager": "npm@11.6.0"
+  "packageManager": "npm@11.6.0",
+  "overrides": {
+    "floating-vue": "5.2.2"
+  }
 }

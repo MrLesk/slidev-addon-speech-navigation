@@ -2,8 +2,9 @@
 
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
+import { acquirePreparationLock, completedSince, publishImages } from './prepare-files.mjs'
 
 function resolveSlidev(cwd) {
   const resolvers = [
@@ -65,52 +66,94 @@ async function prepare(entryArgument) {
   const entry = resolve(process.cwd(), entryArgument || 'slides.md')
   const userRoot = dirname(entry)
   const generatedRoot = resolve(userRoot, '.slidev-speech-navigation')
-  const imageRoot = resolve(generatedRoot, 'slides')
-  const slidev = resolveSlidev(userRoot)
-  const automatic = process.env.SLIDEV_SPEECH_NAVIGATION_AUTO === '1'
+  const requestedAt = Date.now()
+  const release = await acquirePreparationLock(generatedRoot)
+  let captureRoot
+  try {
+    const slidev = resolveSlidev(userRoot)
+    const automatic = process.env.SLIDEV_SPEECH_NAVIGATION_AUTO === '1'
 
-  const sourceBeforeExport = await stat(entry).catch(() => {
-    throw new Error(`Slide deck not found: ${entry}`)
-  })
+    const sourceBeforeExport = await stat(entry).catch(() => {
+      throw new Error(`Slide deck not found: ${entry}`)
+    })
 
-  await rm(imageRoot, { recursive: true, force: true })
-  await mkdir(generatedRoot, { recursive: true })
+    const completed = await completedSince(generatedRoot, entry, requestedAt, sourceBeforeExport.mtimeMs)
+    if (completed) {
+      console.log(`[speech-navigation] Reused ${completed.slideCount} slide images from the completed export`)
+      return
+    }
+    captureRoot = await mkdtemp(resolve(generatedRoot, '.capture-'))
+    const imageRoot = resolve(captureRoot, 'slides')
 
-  console.log(`${automatic ? '[speech-navigation] ' : ''}Preparing slide images from ${basename(entry)}…`)
-  await run(process.execPath, [
-    slidev,
-    'export',
-    basename(entry),
-    '--format',
-    'png',
-    '--output',
-    imageRoot,
-    '--per-slide',
-  ], {
-    cwd: userRoot,
-    env: {
-      ...process.env,
-      SLIDEV_SPEECH_NAVIGATION_EXPORT: '1',
-    },
-  }, automatic)
+    console.log(`${automatic ? '[speech-navigation] ' : ''}Preparing slide images from ${basename(entry)}…`)
+    await run(process.execPath, [
+      slidev,
+      'export',
+      basename(entry),
+      '--format',
+      'png',
+      '--output',
+      imageRoot,
+      '--with-clicks',
+      '--wait',
+      '350',
+    ], {
+      cwd: userRoot,
+      env: {
+        ...process.env,
+        SLIDEV_SPEECH_NAVIGATION_EXPORT: '1',
+        SLIDEV_SPEECH_NAVIGATION_EXPORT_CACHE: resolve(captureRoot, 'vite'),
+      },
+    }, automatic)
 
-  const images = (await readdir(imageRoot)).filter(file => /^\d+\.png$/.test(file))
-  if (images.length === 0)
-    throw new Error('Slidev finished without creating PNG images')
+    // Slidev's print exporter emits <slide>-<click + 1>.png.
+    // Use the print exporter because keyboard shortcuts are disabled in per-slide print mode.
+    const exported = (await readdir(imageRoot)).flatMap(file => {
+      const match = /^(\d+)-(\d+)\.png$/.exec(file)
+      return match ? [{ file, slide: Number(match[1]), click: Number(match[2]) - 1 }] : []
+    })
+    const starts = new Map()
+    for (const frame of exported)
+      starts.set(frame.slide, Math.min(starts.get(frame.slide) ?? Infinity, frame.click))
+    const normalized = []
+    for (const frame of exported) {
+      const prefix = String(frame.slide).padStart(2, '0')
+      const name = `${prefix}${frame.click === starts.get(frame.slide) ? '' : `-${frame.click}`}.png`
+      await rename(resolve(imageRoot, frame.file), resolve(imageRoot, `prepared-${name}`))
+      normalized.push(name)
+    }
+    // Avoid collisions between raw frame IDs and normalized names in long decks.
+    for (const name of normalized)
+      await rename(resolve(imageRoot, `prepared-${name}`), resolve(imageRoot, name))
+    const frames = (await readdir(imageRoot)).filter(file => /^\d+(?:-\d+)?\.png$/.test(file))
+    const images = frames.filter(file => /^\d+\.png$/.test(file))
+    if (images.length === 0)
+      throw new Error('Slidev finished without creating PNG images')
 
-  const sourceAfterExport = await stat(entry)
-  if (sourceAfterExport.mtimeMs > sourceBeforeExport.mtimeMs + 1)
-    throw new Error('The slide deck changed during image capture.')
-  await writeFile(resolve(generatedRoot, 'manifest.json'), `${JSON.stringify({
-    entry,
-    sourceMtimeMs: sourceAfterExport.mtimeMs,
-    slideCount: images.length,
-    generatedAt: new Date().toISOString(),
-  }, null, 2)}\n`)
+    const sourceAfterExport = await stat(entry)
+    if (sourceAfterExport.mtimeMs > sourceBeforeExport.mtimeMs + 1)
+      throw new Error('The slide deck changed during image capture.')
+    await publishImages(generatedRoot, imageRoot, {
+      version: 2,
+      entry,
+      sourceMtimeMs: sourceAfterExport.mtimeMs,
+      slideCount: images.length,
+      images: frames,
+      generatedAt: new Date().toISOString(),
+    })
 
-  console.log(automatic
-    ? `[speech-navigation] Prepared ${images.length} slide images`
-    : `Prepared ${images.length} slide images in ${imageRoot}`)
+    console.log(automatic
+      ? `[speech-navigation] Prepared ${images.length} slide images`
+      : `Prepared ${images.length} slide images in ${generatedRoot}`)
+  }
+  finally {
+    try {
+      if (captureRoot) await rm(captureRoot, { recursive: true, force: true })
+    }
+    finally {
+      await release()
+    }
+  }
 }
 
 const [entry] = process.argv.slice(2)

@@ -21,7 +21,7 @@ npm run check
 
 ## Project shape
 
-- `global-top.vue` is the small presenter interface.
+- `custom-nav-controls.vue` contains the Presenter controls.
 - `src/client/` handles microphone and navigation state.
 - `src/server/` keeps the API key private and calls OpenAI.
 - `src/core/` contains pure window and prompt logic.

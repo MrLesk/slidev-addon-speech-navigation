@@ -13,7 +13,7 @@
     "types": ["node", "vite/client"]
   },
   "include": [
-    "global-top.vue",
+    "custom-nav-controls.vue",
     "setup/**/*.ts",
     "src/**/*.ts",
     "tests/**/*.ts",

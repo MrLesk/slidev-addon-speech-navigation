@@ -61,7 +61,7 @@ describe('OpenAI response handling', () => {
 
     await expect(requestNavigationDecision(
       'test-key',
-      { currentSlide: 1, totalSlides: 1 },
+      { currentSlide: 1, totalSlides: 2 },
       'Welcome everyone.',
       prepared,
       {

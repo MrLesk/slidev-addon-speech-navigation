@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, sep } from 'node:path'
 import type { ViteDevServer } from 'vite'
 import { inspectAssets, type AssetStatus } from './slides'
@@ -111,6 +112,7 @@ export function createImagePreparation(options: ImagePreparationOptions) {
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let finishRetry: (() => void) | null = null
   let child: ChildProcess | null = null
+  const attachedAt = Date.now()
   const retryDelays = options.retryDelays ?? [750, 2_500]
 
   const runPrepare = options.runPrepare
@@ -243,6 +245,12 @@ export function createImagePreparation(options: ImagePreparationOptions) {
       void prepare(true)
     }
     const onFileChange = (file: string) => scheduleRefresh(file)
+    const onFileAdd = async (file: string) => {
+      if (!isDeckVisualFile(options.userRoot, file)) return
+      const info = await stat(file).catch(() => null)
+      // Vite discovers existing files after listening; those are in the startup export.
+      if (!stopped && info && info.ctimeMs > attachedAt) scheduleRefresh(file)
+    }
     const stop = () => {
       stopped = true
       if (debounce)
@@ -257,12 +265,12 @@ export function createImagePreparation(options: ImagePreparationOptions) {
         }, 5_000)
         forceStop.unref()
       }
-      server.watcher.off('add', onFileChange)
+      server.watcher.off('add', onFileAdd)
       server.watcher.off('change', onFileChange)
       server.watcher.off('unlink', onFileChange)
     }
 
-    server.watcher.on('add', onFileChange)
+    server.watcher.on('add', onFileAdd)
     server.watcher.on('change', onFileChange)
     server.watcher.on('unlink', onFileChange)
     server.httpServer?.once('close', stop)

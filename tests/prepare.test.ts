@@ -1,3 +1,5 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { resolve } from 'node:path'
 import type { ViteDevServer } from 'vite'
@@ -75,6 +77,25 @@ describe('automatic slide image preparation', () => {
     await pending
 
     expect(runPrepare).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores initial discovery of existing source files after startup', async () => {
+    const folder = await mkdtemp(resolve(tmpdir(), 'speech-watch-'))
+    const file = resolve(folder, 'slides.md')
+    await writeFile(file, '# Test')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const runPrepare = vi.fn(async () => {})
+    const preparation = createImagePreparation(createOptions({ userRoot: folder,
+      inspect: async () => ({ state: 'ready', message: 'Ready' }), runPrepare, debounceMs: 0 }))
+    const { server, watcher, httpServer } = createServer()
+    preparation.attach(server)
+    httpServer.emit('listening')
+    await vi.waitFor(() => expect(preparation.getStatus().state).toBe('ready'))
+    watcher.emit('add', file)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(runPrepare).toHaveBeenCalledOnce()
+    httpServer.emit('close')
+    await rm(folder, { recursive: true, force: true })
   })
 
   it('queues an edit that arrives during the startup export', async () => {
